@@ -10,9 +10,17 @@ model_list = [
     'microsoft/Florence-2-base-ft',
     'microsoft/Florence-2-large',
     'microsoft/Florence-2-large-ft',
+    'HuggingFaceM4/Florence-2-DocVQA',
+    'MiaoshouAI/Florence-2-base-PromptGen-v1.5',
+    'MiaoshouAI/Florence-2-large-PromptGen-v1.5',
+    'MiaoshouAI/Florence-2-base-PromptGen-v2.0',
     'MiaoshouAI/Florence-2-large-PromptGen-v2.0',
-    'MiaoshouAI/Florence-2-base-PromptGen-v1.5'
+    'thwri/CogFlorence-2.2-Large',
+    'gokaygokay/Florence-2-SD3-Captioner',
+    'gokaygokay/Florence-2-Flux-Large',
+    'NikshepShetty/Florence-2-pixelpros'
 ]
+
 
 engine = FlorenceEngine()
 

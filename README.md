@@ -44,8 +44,18 @@ This extension runs completely locally, allowing you to run powerful vision task
 By default, the model weights will be downloaded to `models/Florence2/<model_name>` within your main Stable Diffusion WebUI directory. This allows for clean filesystem management and offline operation once the snapshots are downloaded.
 
 ### Supported Default Models:
-- `microsoft/Florence-2-base` (232M)
-- `microsoft/Florence-2-base-ft` (232M fine-tuned)
-- `microsoft/Florence-2-large` (770M)
-- `microsoft/Florence-2-large-ft` (770M fine-tuned)
-- `MiaoshouAI/Florence-2-large-PromptGen-v2.0` (prompt-generation specialized)
+- **Official Models**:
+  - `microsoft/Florence-2-base`
+  - `microsoft/Florence-2-base-ft`
+  - `microsoft/Florence-2-large`
+  - `microsoft/Florence-2-large-ft`
+  - `HuggingFaceM4/Florence-2-DocVQA`
+- **Fine-Tuned Models**:
+  - `MiaoshouAI/Florence-2-base-PromptGen-v1.5`
+  - `MiaoshouAI/Florence-2-large-PromptGen-v1.5`
+  - `MiaoshouAI/Florence-2-base-PromptGen-v2.0`
+  - `MiaoshouAI/Florence-2-large-PromptGen-v2.0`
+  - `thwri/CogFlorence-2.2-Large`
+  - `gokaygokay/Florence-2-SD3-Captioner`
+  - `gokaygokay/Florence-2-Flux-Large`
+  - `NikshepShetty/Florence-2-pixelpros`
