@@ -285,8 +285,18 @@ class FlorenceEngine:
                                 _patched_prepare.__is_patched__ = True
                                 cls.prepare_inputs_for_generation = _patched_prepare
                                 print(f"[Florence-2 Patch] Dynamically patched prepare_inputs_for_generation for {name}.")
+                                
+                        # 3. Ensure generation_config is populated (prevents NoneType _from_model_config AttributeError under transformers 4.50+/5.x)
+                        if getattr(obj, "generation_config", None) is None:
+                            try:
+                                from transformers import GenerationConfig
+                                obj.generation_config = GenerationConfig.from_model_config(obj.config)
+                                print(f"[Florence-2 Patch] Dynamically initialized generation_config for {name}.")
+                            except Exception as e:
+                                print(f"[Florence-2 Patch] Failed to initialize generation_config for {name}: {str(e)}")
             except Exception as e:
                 print(f"[Florence-2 Patch] Memory object patching failed: {str(e)}")
+
 
             self.model.eval()
 
