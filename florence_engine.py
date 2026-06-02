@@ -122,8 +122,56 @@ try:
                 return []
             raise e
     transformers.dynamic_module_utils.check_imports = _patched_check_imports
+
+    # Intercept get_class_from_dynamic_module to dynamically patch Florence-2 classes loaded from remote code
+    _original_get_class = transformers.dynamic_module_utils.get_class_from_dynamic_module
+    def _patched_get_class(*args, **kwargs):
+        cls = _original_get_class(*args, **kwargs)
+        if cls is not None:
+            name = getattr(cls, "__name__", None)
+            if name == "Florence2ForConditionalGeneration":
+                print(f"[Florence-2 Patch] Intercepted Florence2ForConditionalGeneration! Resolving module classes...")
+                import sys
+                try:
+                    module = sys.modules[cls.__module__]
+                    for attr_name in dir(module):
+                        attr = getattr(module, attr_name)
+                        if isinstance(attr, type):
+                            attr_class_name = getattr(attr, "__name__", None)
+                            if attr_class_name in ["Florence2ForConditionalGeneration", "Florence2LanguageForConditionalGeneration", "Florence2LanguageModel"]:
+                                print(f"[Florence-2 Patch] Patching dynamic module class: {attr_class_name}")
+                                
+                                # 1. Dynamically inject GenerationMixin into base classes to support .generate() under transformers 4.50+/5.x
+                                try:
+                                    import transformers.generation
+                                    gen_mixin = transformers.generation.GenerationMixin
+                                    if gen_mixin not in attr.__bases__:
+                                        attr.__bases__ = attr.__bases__ + (gen_mixin,)
+                                        print(f"[Florence-2 Patch] Dynamically added GenerationMixin to {attr_class_name} base classes.")
+                                except Exception as e:
+                                    print(f"[Florence-2 Patch] Failed to add GenerationMixin to {attr_class_name}: {str(e)}")
+                                
+                                # 2. Patch prepare_inputs_for_generation to prevent past_key_values shape AttributeError crashes
+                                _original_prepare = getattr(attr, "prepare_inputs_for_generation", None)
+                                if _original_prepare is not None:
+                                    def _patched_prepare(self, input_ids, past_key_values=None, **pk_kwargs):
+                                        if past_key_values is not None:
+                                            try:
+                                                if len(past_key_values) > 0 and (past_key_values[0] is None or past_key_values[0][0] is None):
+                                                    past_key_values = None
+                                            except Exception:
+                                                past_key_values = None
+                                        return _original_prepare(self, input_ids, past_key_values=past_key_values, **pk_kwargs)
+                                    attr.prepare_inputs_for_generation = _patched_prepare
+                                    print(f"[Florence-2 Patch] Dynamically patched prepare_inputs_for_generation for {attr_class_name}.")
+                except Exception as e:
+                    print(f"[Florence-2 Patch] Module introspection failed: {str(e)}")
+        return cls
+    transformers.dynamic_module_utils.get_class_from_dynamic_module = _patched_get_class
 except Exception:
     pass
+
+
 
 
 # Patch json.JSONEncoder to prevent serialization errors for custom configuration objects
@@ -205,7 +253,43 @@ class FlorenceEngine:
                 torch_dtype=dtype,
                 trust_remote_code=True
             ).to(target_device)
+            
+            # Unconditionally patch the model classes in memory directly on the loaded objects
+            # This completely bypasses any import caching, compilation caching, or re-loads
+            try:
+                for obj in [self.model, getattr(self.model, "language_model", None)]:
+                    if obj is not None:
+                        cls = obj.__class__
+                        name = getattr(cls, "__name__", None)
+                        print(f"[Florence-2 Patch] Active patching on loaded class: {name}")
+                        
+                        # 1. Inject GenerationMixin
+                        import transformers.generation
+                        gen_mixin = transformers.generation.GenerationMixin
+                        if gen_mixin not in cls.__bases__:
+                            cls.__bases__ = cls.__bases__ + (gen_mixin,)
+                            print(f"[Florence-2 Patch] Dynamically added GenerationMixin to {name}.")
+                            
+                        # 2. Patch prepare_inputs_for_generation
+                        _original_prepare = getattr(cls, "prepare_inputs_for_generation", None)
+                        if _original_prepare is not None:
+                            if not getattr(_original_prepare, "__is_patched__", False):
+                                def _patched_prepare(self_obj, input_ids, past_key_values=None, **pk_kwargs):
+                                    if past_key_values is not None:
+                                        try:
+                                            if len(past_key_values) > 0 and (past_key_values[0] is None or past_key_values[0][0] is None):
+                                                past_key_values = None
+                                        except Exception:
+                                            past_key_values = None
+                                    return _original_prepare(self_obj, input_ids, past_key_values=past_key_values, **pk_kwargs)
+                                _patched_prepare.__is_patched__ = True
+                                cls.prepare_inputs_for_generation = _patched_prepare
+                                print(f"[Florence-2 Patch] Dynamically patched prepare_inputs_for_generation for {name}.")
+            except Exception as e:
+                print(f"[Florence-2 Patch] Memory object patching failed: {str(e)}")
+
             self.model.eval()
+
 
             self.loaded_model_name = model_name
             self.loaded_precision = precision
@@ -265,15 +349,17 @@ class FlorenceEngine:
         input_ids = inputs["input_ids"].to(self.model.device)
         pixel_values = inputs["pixel_values"].to(self.model.device, dtype=self.model.dtype)
 
-        # Run inference
+        # Run inference with use_cache=False to completely bypass KV caching AttributeError compatibility issues on Windows
         with torch.no_grad():
             generated_ids = self.model.generate(
                 input_ids=input_ids,
                 pixel_values=pixel_values,
                 max_new_tokens=1024,
                 do_sample=False,
-                num_beams=3
+                num_beams=3,
+                use_cache=False
             )
+
 
         # Decode output
         generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
