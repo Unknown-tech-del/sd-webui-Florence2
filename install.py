@@ -18,7 +18,7 @@ except Exception:
         upgrade_transformers = True
 
 if upgrade_transformers:
-    launch.run_pip("install transformers>=4.57.0", "upgrading transformers to support Qwen3-VL")
+    launch.run_pip("install --upgrade transformers>=4.57.0", "upgrading transformers to support Qwen3-VL")
 
 if not launch.is_installed("timm"):
     launch.run_pip("install timm", "requirements for Florence-2 (timm)")
