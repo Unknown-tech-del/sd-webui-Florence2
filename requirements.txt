@@ -2,3 +2,4 @@ transformers==4.49.0
 timm
 einops
 accelerate
+qwen-vl-utils

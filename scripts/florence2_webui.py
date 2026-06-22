@@ -18,7 +18,13 @@ model_list = [
     'thwri/CogFlorence-2.2-Large',
     'gokaygokay/Florence-2-SD3-Captioner',
     'gokaygokay/Florence-2-Flux-Large',
-    'NikshepShetty/Florence-2-pixelpros'
+    'NikshepShetty/Florence-2-pixelpros',
+    'Qwen/Qwen3-VL-2B-Instruct',
+    'Qwen/Qwen3-VL-2B-Thinking',
+    'Qwen/Qwen2.5-VL-3B-Instruct',
+    'Qwen/Qwen2.5-VL-7B-Instruct',
+    'Qwen/Qwen2-VL-2B-Instruct',
+    'Qwen/Qwen2-VL-7B-Instruct'
 ]
 
 

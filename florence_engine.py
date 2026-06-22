@@ -193,8 +193,6 @@ json.JSONEncoder.default = _patched_default
 
 from transformers import AutoProcessor, AutoModelForCausalLM
 
-
-
 # Setup base models directory under SD WebUI models folder
 try:
     from modules import paths
@@ -202,6 +200,80 @@ try:
 except ImportError:
     # Fallback for standalone/testing environments
     models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "Florence2")
+
+def parse_qwen_grounding(text, width, height):
+    import re
+    
+    # Matches patterns like <box>(y1,x1),(y2,x2)</box> or <|box_start|>(y1,x1),(y2,x2)<|box_end|>
+    box_pattern = re.compile(
+        r'(?:<box>|<\|box_start\|>)\s*\((\d+),(\d+)\),\s*\((\d+),(\d+)\)\s*(?:</box>|<\|box_end\|>)'
+    )
+    
+    # Matches <ref>label</ref><box>(y1,x1),(y2,x2)</box>
+    # or <|object_def_start|>label<|object_def_end|><|box_start|>(y1,x1),(y2,x2)<|box_end|>
+    labeled_box_pattern = re.compile(
+        r'(?:<ref>|<\|object_def_start\|>)(.*?)(?:</ref>|<\|object_def_end\|>)\s*(?:<box>|<\|box_start\|>)\s*\((\d+),(\d+)\),\s*\((\d+),(\d+)\)\s*(?:</box>|<\|box_end\|>)'
+    )
+    
+    bboxes = []
+    labels = []
+    
+    # 1. Match labeled boxes first
+    matches = labeled_box_pattern.findall(text)
+    for match in matches:
+        label = match[0].strip()
+        y1, x1, y2, x2 = map(int, match[1:5])
+        
+        # Coordinates in Qwen-VL are (y_min, x_min), (y_max, x_max) normalized to 1000
+        xmin_px = (x1 / 1000.0) * width
+        ymin_px = (y1 / 1000.0) * height
+        xmax_px = (x2 / 1000.0) * width
+        ymax_px = (y2 / 1000.0) * height
+        
+        bboxes.append([xmin_px, ymin_px, xmax_px, ymax_px])
+        labels.append(label)
+        
+    # 2. If no labeled boxes found, find all boxes and try to parse nearest preceding labels
+    if not bboxes:
+        box_matches = list(box_pattern.finditer(text))
+        for match in box_matches:
+            start_idx = match.start()
+            y1, x1, y2, x2 = map(int, match.groups())
+            
+            # Look for preceding ref/label tag
+            preceding_text = text[:start_idx]
+            ref_match = re.findall(
+                r'(?:<ref>|<\|object_def_start\|>)(.*?)(?:</ref>|<\|object_def_end\|>)',
+                preceding_text
+            )
+            label = ref_match[-1].strip() if ref_match else ""
+            
+            xmin_px = (x1 / 1000.0) * width
+            ymin_px = (y1 / 1000.0) * height
+            xmax_px = (x2 / 1000.0) * width
+            ymax_px = (y2 / 1000.0) * height
+            
+            bboxes.append([xmin_px, ymin_px, xmax_px, ymax_px])
+            labels.append(label)
+            
+    # 3. Fallback: Parse bracket-based bboxes [ymin, xmin, ymax, xmax]
+    if not bboxes:
+        bracket_pattern = re.compile(r'\[\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)\s*\]')
+        bracket_matches = bracket_pattern.findall(text)
+        for match in bracket_matches:
+            v1, v2, v3, v4 = map(int, match)
+            if max(v1, v2, v3, v4) <= 1000:
+                ymin_px = (v1 / 1000.0) * height
+                xmin_px = (v2 / 1000.0) * width
+                ymax_px = (v3 / 1000.0) * height
+                xmax_px = (v4 / 1000.0) * width
+            else:
+                ymin_px, xmin_px, ymax_px, xmax_px = v1, v2, v3, v4
+                
+            bboxes.append([xmin_px, ymin_px, xmax_px, ymax_px])
+            labels.append("")
+            
+    return bboxes, labels
 
 class FlorenceEngine:
     def __init__(self):
@@ -247,59 +319,73 @@ class FlorenceEngine:
             self.unload_model()
 
             print(f"[Florence-2] Loading model {model_name} on {target_device} in {precision} precision...")
-            self.processor = AutoProcessor.from_pretrained(model_local_path, trust_remote_code=True)
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_local_path,
-                torch_dtype=dtype,
-                trust_remote_code=True
-            ).to(target_device)
             
-            # Unconditionally patch the model classes in memory directly on the loaded objects
-            # This completely bypasses any import caching, compilation caching, or re-loads
-            try:
-                for obj in [self.model, getattr(self.model, "language_model", None)]:
-                    if obj is not None:
-                        cls = obj.__class__
-                        name = getattr(cls, "__name__", None)
-                        print(f"[Florence-2 Patch] Active patching on loaded class: {name}")
-                        
-                        # 1. Inject GenerationMixin
-                        import transformers.generation
-                        gen_mixin = transformers.generation.GenerationMixin
-                        if gen_mixin not in cls.__bases__:
-                            cls.__bases__ = cls.__bases__ + (gen_mixin,)
-                            print(f"[Florence-2 Patch] Dynamically added GenerationMixin to {name}.")
+            is_qwen = "qwen" in model_name.lower()
+            
+            if is_qwen:
+                try:
+                    from transformers import AutoModelForVision2Seq
+                except ImportError:
+                    from transformers import AutoModelForImageTextToText as AutoModelForVision2Seq
+                
+                self.processor = AutoProcessor.from_pretrained(model_local_path, trust_remote_code=True)
+                self.model = AutoModelForVision2Seq.from_pretrained(
+                    model_local_path,
+                    torch_dtype=dtype,
+                    trust_remote_code=True
+                ).to(target_device)
+            else:
+                self.processor = AutoProcessor.from_pretrained(model_local_path, trust_remote_code=True)
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_local_path,
+                    torch_dtype=dtype,
+                    trust_remote_code=True
+                ).to(target_device)
+            
+                # Unconditionally patch the model classes in memory directly on the loaded objects
+                # This completely bypasses any import caching, compilation caching, or re-loads
+                try:
+                    for obj in [self.model, getattr(self.model, "language_model", None)]:
+                        if obj is not None:
+                            cls = obj.__class__
+                            name = getattr(cls, "__name__", None)
+                            print(f"[Florence-2 Patch] Active patching on loaded class: {name}")
                             
-                        # 2. Patch prepare_inputs_for_generation
-                        _original_prepare = getattr(cls, "prepare_inputs_for_generation", None)
-                        if _original_prepare is not None:
-                            if not getattr(_original_prepare, "__is_patched__", False):
-                                def _patched_prepare(self_obj, input_ids, past_key_values=None, **pk_kwargs):
-                                    if past_key_values is not None:
-                                        try:
-                                            if len(past_key_values) > 0 and (past_key_values[0] is None or past_key_values[0][0] is None):
-                                                past_key_values = None
-                                        except Exception:
-                                            past_key_values = None
-                                    return _original_prepare(self_obj, input_ids, past_key_values=past_key_values, **pk_kwargs)
-                                _patched_prepare.__is_patched__ = True
-                                cls.prepare_inputs_for_generation = _patched_prepare
-                                print(f"[Florence-2 Patch] Dynamically patched prepare_inputs_for_generation for {name}.")
+                            # 1. Inject GenerationMixin
+                            import transformers.generation
+                            gen_mixin = transformers.generation.GenerationMixin
+                            if gen_mixin not in cls.__bases__:
+                                cls.__bases__ = cls.__bases__ + (gen_mixin,)
+                                print(f"[Florence-2 Patch] Dynamically added GenerationMixin to {name}.")
                                 
-                        # 3. Ensure generation_config is populated (prevents NoneType _from_model_config AttributeError under transformers 4.50+/5.x)
-                        if getattr(obj, "generation_config", None) is None:
-                            try:
-                                from transformers import GenerationConfig
-                                obj.generation_config = GenerationConfig.from_model_config(obj.config)
-                                print(f"[Florence-2 Patch] Dynamically initialized generation_config for {name}.")
-                            except Exception as e:
-                                print(f"[Florence-2 Patch] Failed to initialize generation_config for {name}: {str(e)}")
-            except Exception as e:
-                print(f"[Florence-2 Patch] Memory object patching failed: {str(e)}")
-
+                            # 2. Patch prepare_inputs_for_generation
+                            _original_prepare = getattr(cls, "prepare_inputs_for_generation", None)
+                            if _original_prepare is not None:
+                                if not getattr(_original_prepare, "__is_patched__", False):
+                                    def _patched_prepare(self_obj, input_ids, past_key_values=None, **pk_kwargs):
+                                        if past_key_values is not None:
+                                            try:
+                                                if len(past_key_values) > 0 and (past_key_values[0] is None or past_key_values[0][0] is None):
+                                                    past_key_values = None
+                                            except Exception:
+                                                past_key_values = None
+                                        return _original_prepare(self_obj, input_ids, past_key_values=past_key_values, **pk_kwargs)
+                                    _patched_prepare.__is_patched__ = True
+                                    cls.prepare_inputs_for_generation = _patched_prepare
+                                    print(f"[Florence-2 Patch] Dynamically patched prepare_inputs_for_generation for {name}.")
+                                    
+                            # 3. Ensure generation_config is populated (prevents NoneType _from_model_config AttributeError under transformers 4.50+/5.x)
+                            if getattr(obj, "generation_config", None) is None:
+                                try:
+                                    from transformers import GenerationConfig
+                                    obj.generation_config = GenerationConfig.from_model_config(obj.config)
+                                    print(f"[Florence-2 Patch] Dynamically initialized generation_config for {name}.")
+                                except Exception as e:
+                                    print(f"[Florence-2 Patch] Failed to initialize generation_config for {name}: {str(e)}")
+                except Exception as e:
+                    print(f"[Florence-2 Patch] Memory object patching failed: {str(e)}")
 
             self.model.eval()
-
 
             self.loaded_model_name = model_name
             self.loaded_precision = precision
@@ -336,98 +422,174 @@ class FlorenceEngine:
         image_rgb = image.convert("RGB")
         w, h = image_rgb.size
 
-        # Define Florence-2 prompt mapping
-        task_prompts = {
-            "Caption": "<CAPTION>",
-            "Detailed Caption": "<DETAILED_CAPTION>",
-            "More Detailed Caption": "<MORE_DETAILED_CAPTION>",
-            "Object Detection": "<OD>",
-            "Dense Region Caption": "<DENSE_REGION_CAPTION>",
-            "Region Proposal": "<REGION_PROPOSAL>",
-            "Caption to Phrase Grounding": f"<CAPTION_TO_PHRASE_GROUNDING> {prompt_text}",
-            "Referring Expression Segmentation": f"<REFERRING_EXPRESSION_SEGMENTATION> {prompt_text}",
-            "OCR": "<OCR>",
-            "OCR with Region": "<OCR_WITH_REGION>"
-        }
+        is_qwen = "qwen" in self.loaded_model_name.lower()
 
-        task_prompt = task_prompts.get(task, "<CAPTION>")
+        if is_qwen:
+            qwen_prompts = {
+                "Caption": "Describe this image in a single sentence.",
+                "Detailed Caption": "Describe this image in detail.",
+                "More Detailed Caption": "Describe this image with as much detail as possible.",
+                "Object Detection": "Detect all major objects in this image and return their labels and bounding boxes in normalized coordinates format.",
+                "Dense Region Caption": "Describe each region of this image in detail, providing bounding boxes for each described region.",
+                "Region Proposal": "Locate the main regions and bounding boxes.",
+                "Caption to Phrase Grounding": f"Locate the phrase '{prompt_text}' in this image and return its bounding box.",
+                "Referring Expression Segmentation": f"Locate '{prompt_text}' in this image and return its bounding box.",
+                "OCR": "Perform OCR to extract all readable text from the image.",
+                "OCR with Region": "Locate all text regions in the image and extract the text."
+            }
+            qwen_prompt = qwen_prompts.get(task, "Describe this image.")
 
-        print(f"[Florence-2] Running task '{task}' with prompt: '{task_prompt}'")
+            print(f"[Qwen-VL] Running task '{task}' with prompt: '{qwen_prompt}'")
 
-        # Prepare inputs
-        inputs = self.processor(text=task_prompt, images=image_rgb, return_tensors="pt")
-        input_ids = inputs["input_ids"].to(self.model.device)
-        pixel_values = inputs["pixel_values"].to(self.model.device, dtype=self.model.dtype)
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image_rgb},
+                        {"type": "text", "text": qwen_prompt}
+                    ]
+                }
+            ]
 
-        # Run inference with use_cache=False to completely bypass KV caching AttributeError compatibility issues on Windows
-        with torch.no_grad():
-            generated_ids = self.model.generate(
-                input_ids=input_ids,
-                pixel_values=pixel_values,
-                max_new_tokens=1024,
-                do_sample=False,
-                num_beams=3,
-                use_cache=False
+            text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            
+            try:
+                from qwen_vl_utils import process_vision_info
+                image_inputs, video_inputs = process_vision_info(messages)
+            except ImportError:
+                image_inputs = [image_rgb]
+                video_inputs = None
+
+            inputs = self.processor(
+                text=[text],
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt"
             )
 
+            # Move tensors to model device
+            inputs = {k: v.to(self.model.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
 
-        # Decode output
-        generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+            with torch.no_grad():
+                generated_ids = self.model.generate(
+                    **inputs,
+                    max_new_tokens=1024,
+                    do_sample=False
+                )
 
-        # Post process to parse answer into structural structures
-        parsed_answer = self.processor.post_process_generation(
-            generated_text,
-            task=task_prompt,
-            image_size=(w, h)
-        )
+            generated_ids_trimmed = [
+                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
+            ]
+            text_result = self.processor.batch_decode(
+                generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )[0].strip()
 
-        print(f"[Florence-2] Raw parsed answer: {parsed_answer}")
+            print(f"[Qwen-VL] Raw result text: {text_result}")
 
-        # Extract parsed elements for visualization and mask generation
-        bboxes = []
-        labels = []
-        polygons = []
-        polygons_labels = []
+            bboxes, labels = parse_qwen_grounding(text_result, w, h)
+            polygons = []
+            polygons_labels = []
 
-        for k, v in parsed_answer.items():
-            if isinstance(v, dict):
-                if 'bboxes' in v:
-                    bboxes.extend(v['bboxes'])
-                    labels.extend(v.get('labels', [''] * len(v['bboxes'])))
-                if 'polygons' in v:
-                    polygons.extend(v['polygons'])
-                    polygons_labels.extend(v.get('labels', [''] * len(v['polygons'])))
+            # Format result description if bboxes were parsed
+            if bboxes:
+                clean_lines = []
+                for box, lbl in zip(bboxes, labels):
+                    clean_lines.append(f"{lbl}: {[int(coord) for coord in box]}")
+                text_result = "\n".join(clean_lines)
 
-        # 1. Generate text result description
-        text_results = []
-        for k, v in parsed_answer.items():
-            if isinstance(v, str):
-                text_results.append(v)
-            elif isinstance(v, dict):
-                if 'caption' in v:
-                    text_results.append(v['caption'])
-                elif 'ocr_text' in v:
-                    text_results.append(v['ocr_text'])
-                elif 'labels' in v and not 'bboxes' in v and not 'polygons' in v:
-                    text_results.append(", ".join(v['labels']))
-                else:
-                    lines = []
+        else:
+            # Define Florence-2 prompt mapping
+            task_prompts = {
+                "Caption": "<CAPTION>",
+                "Detailed Caption": "<DETAILED_CAPTION>",
+                "More Detailed Caption": "<MORE_DETAILED_CAPTION>",
+                "Object Detection": "<OD>",
+                "Dense Region Caption": "<DENSE_REGION_CAPTION>",
+                "Region Proposal": "<REGION_PROPOSAL>",
+                "Caption to Phrase Grounding": f"<CAPTION_TO_PHRASE_GROUNDING> {prompt_text}",
+                "Referring Expression Segmentation": f"<REFERRING_EXPRESSION_SEGMENTATION> {prompt_text}",
+                "OCR": "<OCR>",
+                "OCR with Region": "<OCR_WITH_REGION>"
+            }
+
+            task_prompt = task_prompts.get(task, "<CAPTION>")
+
+            print(f"[Florence-2] Running task '{task}' with prompt: '{task_prompt}'")
+
+            # Prepare inputs
+            inputs = self.processor(text=task_prompt, images=image_rgb, return_tensors="pt")
+            input_ids = inputs["input_ids"].to(self.model.device)
+            pixel_values = inputs["pixel_values"].to(self.model.device, dtype=self.model.dtype)
+
+            # Run inference with use_cache=False to completely bypass KV caching AttributeError compatibility issues on Windows
+            with torch.no_grad():
+                generated_ids = self.model.generate(
+                    input_ids=input_ids,
+                    pixel_values=pixel_values,
+                    max_new_tokens=1024,
+                    do_sample=False,
+                    num_beams=3,
+                    use_cache=False
+                )
+
+            # Decode output
+            generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+
+            # Post process to parse answer into structural structures
+            parsed_answer = self.processor.post_process_generation(
+                generated_text,
+                task=task_prompt,
+                image_size=(w, h)
+            )
+
+            print(f"[Florence-2] Raw parsed answer: {parsed_answer}")
+
+            # Extract parsed elements for visualization and mask generation
+            bboxes = []
+            labels = []
+            polygons = []
+            polygons_labels = []
+
+            for k, v in parsed_answer.items():
+                if isinstance(v, dict):
                     if 'bboxes' in v:
-                        lbls = v.get('labels', [''] * len(v['bboxes']))
-                        for b, l in zip(v['bboxes'], lbls):
-                            lines.append(f"{l}: {b}")
+                        bboxes.extend(v['bboxes'])
+                        labels.extend(v.get('labels', [''] * len(v['bboxes'])))
                     if 'polygons' in v:
-                        lbls = v.get('labels', [''] * len(v['polygons']))
-                        for p, l in zip(v['polygons'], lbls):
-                            lines.append(f"{l}: {p}")
-                    if lines:
-                        text_results.append("\n".join(lines))
-                    else:
-                        text_results.append(str(v))
-            else:
-                text_results.append(str(v))
+                        polygons.extend(v['polygons'])
+                        polygons_labels.extend(v.get('labels', [''] * len(v['polygons'])))
 
-        text_result = "\n\n".join(text_results)
+            # 1. Generate text result description
+            text_results = []
+            for k, v in parsed_answer.items():
+                if isinstance(v, str):
+                    text_results.append(v)
+                elif isinstance(v, dict):
+                    if 'caption' in v:
+                        text_results.append(v['caption'])
+                    elif 'ocr_text' in v:
+                        text_results.append(v['ocr_text'])
+                    elif 'labels' in v and not 'bboxes' in v and not 'polygons' in v:
+                        text_results.append(", ".join(v['labels']))
+                    else:
+                        lines = []
+                        if 'bboxes' in v:
+                            lbls = v.get('labels', [''] * len(v['bboxes']))
+                            for b, l in zip(v['bboxes'], lbls):
+                                lines.append(f"{l}: {b}")
+                        if 'polygons' in v:
+                            lbls = v.get('labels', [''] * len(v['polygons']))
+                            for p, l in zip(v['polygons'], lbls):
+                                lines.append(f"{l}: {p}")
+                        if lines:
+                            text_results.append("\n".join(lines))
+                        else:
+                            text_results.append(str(v))
+                else:
+                    text_results.append(str(v))
+
+            text_result = "\n\n".join(text_results)
 
         # 2. Visualization Drawing
         visualized_image = image_rgb.copy()

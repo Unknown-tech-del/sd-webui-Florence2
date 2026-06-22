@@ -11,3 +11,7 @@ if not launch.is_installed("einops"):
 
 if not launch.is_installed("accelerate"):
     launch.run_pip("install accelerate", "requirements for Florence-2 (accelerate)")
+
+if not launch.is_installed("qwen_vl_utils"):
+    launch.run_pip("install qwen-vl-utils", "requirements for Qwen-VL (qwen-vl-utils)")
+
