@@ -414,7 +414,7 @@ class FlorenceEngine:
             torch.cuda.empty_cache()
         return "Model unloaded."
 
-    def run_task(self, image, task, prompt_text=""):
+    def run_task(self, image, task, prompt_text="", max_tokens=1024, temperature=0.7, top_p=0.9, do_sample=False):
         if self.model is None or self.processor is None:
             raise RuntimeError("Florence-2 model is not loaded. Please load a model first.")
 
@@ -472,10 +472,16 @@ class FlorenceEngine:
             inputs = {k: v.to(self.model.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
 
             with torch.no_grad():
+                gen_kwargs = {
+                    "max_new_tokens": max_tokens,
+                    "do_sample": do_sample
+                }
+                if do_sample:
+                    gen_kwargs["temperature"] = temperature
+                    gen_kwargs["top_p"] = top_p
                 generated_ids = self.model.generate(
                     **inputs,
-                    max_new_tokens=1024,
-                    do_sample=False
+                    **gen_kwargs
                 )
 
             generated_ids_trimmed = [

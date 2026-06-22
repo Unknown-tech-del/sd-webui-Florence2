@@ -1,6 +1,6 @@
-# Florence-2 Vision-Language WebUI Extension
+# Vision Model Companion WebUI Extension
 
-A premium integration of Microsoft's **Florence-2** vision foundation model as a custom tab inside AUTOMATIC1111 Stable Diffusion WebUI.
+A premium integration of local vision foundation models, including Microsoft's **Florence-2** and Alibaba's **Qwen-VL**, as a custom **Vision** tab inside AUTOMATIC1111 Stable Diffusion WebUI.
 
 This extension runs completely locally, allowing you to run powerful vision tasks including descriptive captioning, object detection, phrase grounding, segmentations, OCR, and smart inpaint mask generation, as well as bulk pre-process image datasets for LoRA training.
 
