@@ -241,9 +241,15 @@ def on_ui_tabs():
                                         q_input_img = gr.Image(type="pil", label="Input Image")
                                         q_task_sel = gr.Dropdown(
                                             choices=[
-                                                "Caption",
-                                                "Detailed Caption",
-                                                "More Detailed Caption",
+                                                "Tags",
+                                                "Simple Description",
+                                                "Detailed Description",
+                                                "Ultra Detailed Description",
+                                                "Cinematic Description",
+                                                "Detailed Analysis",
+                                                "Video Summary",
+                                                "Short Story",
+                                                "Prompt Refine & Expand",
                                                 "Object Detection",
                                                 "Dense Region Caption",
                                                 "Region Proposal",
@@ -253,7 +259,7 @@ def on_ui_tabs():
                                                 "OCR with Region",
                                                 "Custom Prompt"
                                             ],
-                                            value="Detailed Caption",
+                                            value="Detailed Description",
                                             label="Task Preset / Custom Mode"
                                         )
                                         q_prompt_text = gr.Textbox(
@@ -280,8 +286,19 @@ def on_ui_tabs():
                                 
                                 with gr.Row():
                                     q_batch_task = gr.Dropdown(
-                                        choices=["Caption", "Detailed Caption", "More Detailed Caption", "Custom Prompt"],
-                                        value="Detailed Caption",
+                                        choices=[
+                                            "Tags",
+                                            "Simple Description",
+                                            "Detailed Description",
+                                            "Ultra Detailed Description",
+                                            "Cinematic Description",
+                                            "Detailed Analysis",
+                                            "Video Summary",
+                                            "Short Story",
+                                            "Prompt Refine & Expand",
+                                            "Custom Prompt"
+                                        ],
+                                        value="Detailed Description",
                                         label="Caption Task Preset"
                                     )
                                     q_write_mode = gr.Checkbox(label="Overwrite Existing TXT Files", value=True)
